@@ -1,5 +1,5 @@
 // src/notifications/formatMessage.js
-// Ubah payload notifikasi HR Platform (Pub/Sub contract v1) menjadi teks
+// Ubah payload notifikasi (Pub/Sub contract v1) menjadi teks
 // WhatsApp yang siap dikirim lewat Evolution API.
 
 // Versi schema tertinggi yang dimengerti sender ini. Payload dengan version

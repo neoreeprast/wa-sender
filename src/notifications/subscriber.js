@@ -1,5 +1,5 @@
 // src/notifications/subscriber.js
-// WA Sender — subscriber Pub/Sub yang mengambil notifikasi dari HR Platform
+// WA Sender — subscriber Pub/Sub yang mengambil notifikasi dari topic
 // dan mengirimkannya ke penerima lewat WhatsApp (Evolution API).
 //
 // Kontrak: docs Pub/Sub "WhatsApp Notifications". Ringkasnya:

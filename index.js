@@ -1,5 +1,5 @@
 // index.js — WA Sender
-// Konsumsi notifikasi HR Platform dari Google Cloud Pub/Sub dan kirim ke
+// Konsumsi notifikasi dari Google Cloud Pub/Sub dan kirim ke
 // penerima lewat WhatsApp (Evolution API).
 require('dotenv').config();
 
