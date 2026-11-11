@@ -6,20 +6,32 @@
 // numerik lebih besar akan di-skip (log + ack) — lihat subscriber.js.
 const SUPPORTED_VERSION = 1;
 
-// Format satu payload jadi { phone, text } untuk sendText().
-// Payload.recipient.phone sudah E.164 (mis. +6281234567890) — kirim apa adanya.
+function str(v) {
+  return typeof v === 'string' ? v.trim() : '';
+}
+
+// Format satu payload jadi { groupId, phone, text }.
+//
+// • Pesan grup (recipient.groupId terisi): kirim ke grup, phone diabaikan, link
+//   tidak dipakai (selalu "" di kontrak). Body bisa panjang (daftar nama) —
+//   JANGAN dipotong.
+// • Pesan individual: recipient.phone sudah E.164 (mis. +6281234567890).
+//
+// Teks: judul (bold) di baris pertama, baris kosong, lalu body (+ link).
 function formatMessage(payload) {
-  const title = payload?.message?.title?.trim() || '';
-  const body  = payload?.message?.body?.trim()  || '';
-  const link  = payload?.message?.link?.trim()  || '';
+  const title   = str(payload?.message?.title);
+  const body    = str(payload?.message?.body);
+  const link    = str(payload?.message?.link);
+  const groupId = str(payload?.recipient?.groupId);
 
   const parts = [];
   if (title) parts.push(`*${title}*`);
   if (body)  parts.push(body);
-  if (link)  parts.push(link);
+  if (link && !groupId) parts.push(link);
 
   return {
-    phone: payload?.recipient?.phone || '',
+    groupId,
+    phone: groupId ? '' : str(payload?.recipient?.phone),
     text: parts.join('\n\n'),
   };
 }

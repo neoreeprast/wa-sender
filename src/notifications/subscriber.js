@@ -4,29 +4,34 @@
 //
 // Kontrak: docs Pub/Sub "WhatsApp Notifications". Ringkasnya:
 //   • data pesan = UTF-8 JSON, schema version "1"
-//   • delivery at-least-once → WAJIB dedup pada source.notificationId
+//   • delivery at-least-once → WAJIB dedup pada (tenantId, source.notificationId)
 //   • version lebih besar dari yang dimengerti → log + ack (skip), jangan crash
-//   • sukses kirim → ack; gagal kirim → nack supaya Pub/Sub retry
+//   • recipient.groupId terisi → kirim ke grup, JANGAN pernah fallback ke phone
+//   • sukses kirim → ack; gagal transient → nack supaya Pub/Sub retry;
+//     grup ditolak provider (permanen) → log tenantId + groupId, ack
 
 const { PubSub } = require('@google-cloud/pubsub');
 const logger = require('../utils/logger');
 const db     = require('../db');
-const { sendText } = require('../evolution/sender');
+const { sendText, sendGroupText } = require('../evolution/sender');
 const { formatMessage, SUPPORTED_VERSION } = require('./formatMessage');
 
 // ── Dedup (at-least-once) ─────────────────────────────────────────────────────
+// Dikunci per tenant: ID notifikasi grup hanya unik di dalam satu tenant.
 
-function seenRecently(notificationId) {
+function seenRecently(tenantId, notificationId) {
   if (!notificationId) return false;
-  return !!db.prepare('SELECT 1 FROM notification_dedup WHERE notification_id = ?').get(notificationId);
+  return !!db.prepare(
+    'SELECT 1 FROM notification_dedup WHERE tenant_id = ? AND notification_id = ?'
+  ).get(tenantId || '', notificationId);
 }
 
-function markSeen(notificationId, tenantId, type) {
+function markSeen(tenantId, notificationId, type) {
   if (!notificationId) return;
   db.prepare(`
-    INSERT OR IGNORE INTO notification_dedup (notification_id, tenant_id, type)
+    INSERT OR IGNORE INTO notification_dedup (tenant_id, notification_id, type)
     VALUES (?, ?, ?)
-  `).run(notificationId, tenantId || null, type || null);
+  `).run(tenantId || '', notificationId, type || null);
 }
 
 // ── Handler satu pesan ────────────────────────────────────────────────────────
@@ -45,37 +50,64 @@ async function handleMessage(message) {
   const notificationId = payload?.source?.notificationId;
   const tenantId = payload?.tenantId;
   const type = payload?.source?.type;
+  const tag = `notif ${tenantId}/${notificationId}`;
 
   // Unknown version (lebih besar dari yang dimengerti) → skip, jangan crash.
   const version = parseInt(payload?.version, 10);
   if (Number.isFinite(version) && version > SUPPORTED_VERSION) {
-    logger.warn(`WA Sender: version ${payload.version} > ${SUPPORTED_VERSION} (dimengerti), skip (ack) notif ${notificationId}`);
+    logger.warn(`WA Sender: version ${payload.version} > ${SUPPORTED_VERSION} (dimengerti), skip (ack) ${tag}`);
     message.ack();
     return;
   }
 
   // Dedup — pesan yang sama bisa dikirim >1x oleh Pub/Sub.
-  if (seenRecently(notificationId)) {
-    logger.info(`WA Sender: notif ${notificationId} sudah pernah dikirim, skip (ack)`);
+  if (seenRecently(tenantId, notificationId)) {
+    logger.info(`WA Sender: ${tag} sudah pernah dikirim, skip (ack)`);
     message.ack();
     return;
   }
 
-  const { phone, text } = formatMessage(payload);
+  const { groupId, phone, text } = formatMessage(payload);
+
+  // Routing berdasarkan groupId saja (bukan type) — tipe grup baru otomatis jalan.
+  if (groupId) {
+    if (!text) {
+      logger.warn(`WA Sender: ${tag} (grup ${groupId}) tanpa text, skip (ack)`);
+      message.ack();
+      return;
+    }
+    try {
+      await sendGroupText(groupId, text);
+      markSeen(tenantId, notificationId, type);
+      logger.info(`WA Sender: ${tag} (${type}) terkirim ke grup ${groupId}`);
+      message.ack();
+    } catch (err) {
+      if (err.permanent) {
+        // Retry tidak akan menolong, dan HR Platform tidak mengirim ulang.
+        logger.error(`WA Sender: grup ditolak, skip (ack) — tenantId=${tenantId} groupId=${groupId} ${tag}: ${err.message}`);
+        message.ack();
+        return;
+      }
+      logger.error(`WA Sender: gagal kirim ${tag} ke grup ${groupId}, nack untuk retry: ${err.message}`);
+      message.nack();
+    }
+    return;
+  }
+
   if (!phone || !text) {
-    logger.warn(`WA Sender: notif ${notificationId} tanpa phone/text yang valid, skip (ack)`);
+    logger.warn(`WA Sender: ${tag} tanpa phone/text yang valid, skip (ack)`);
     message.ack();
     return;
   }
 
   try {
     await sendText(phone, text);
-    markSeen(notificationId, tenantId, type);
-    logger.info(`WA Sender: notif ${notificationId} (${type}) terkirim ke ${phone}`);
+    markSeen(tenantId, notificationId, type);
+    logger.info(`WA Sender: ${tag} (${type}) terkirim ke ${phone}`);
     message.ack();
   } catch (err) {
     // Kegagalan transient — nack supaya Pub/Sub kirim ulang nanti.
-    logger.error(`WA Sender: gagal kirim notif ${notificationId} ke ${phone}, nack untuk retry: ${err.message}`);
+    logger.error(`WA Sender: gagal kirim ${tag} ke ${phone}, nack untuk retry: ${err.message}`);
     message.nack();
   }
 }
